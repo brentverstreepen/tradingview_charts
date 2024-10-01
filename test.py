@@ -1,75 +1,89 @@
-import asyncio
-from binance.client import Client
-from binance.streams import BinanceSocketManager
+from dash import Dash, html, dcc
+import dash_bootstrap_components as dbc
+from dash.dependencies import Input, Output, State
 import pandas as pd
-import mplfinance as mpf
+import plotly.graph_objects as go
+import MetaTrader5 as mt5
+from mt5_funcs import get_symbol_names, TIMEFRAMES, TIMEFRAME_DICT
 
-# Insert your Binance API key and secret here
-API_KEY = 'your_api_key_here'
-API_SECRET = 'your_api_secret_here'
+# creates the Dash App
+app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
+symbol_dropdown = html.Div([
+    html.P('Symbol:'),
+    dcc.Dropdown(
+        id='symbol-dropdown',
+        options=[{'label': symbol, 'value': symbol} for symbol in get_symbol_names()],
+        value='EURUSD'
+    )
+])
 
-async def plot_live_candlestick():
-    # Initialize Binance client with your API credentials
-    client = Client(API_KEY, API_SECRET)
+timeframe_dropdown = html.Div([
+    html.P('Timeframe:'),
+    dcc.Dropdown(
+        id='timeframe-dropdown',
+        options=[{'label': timeframe, 'value': timeframe} for timeframe in TIMEFRAMES],
+        value='D1'
+    )
+])
 
-    # Set up Binance WebSocket Manager
-    bsm = BinanceSocketManager(client)
+num_bars_input = html.Div([
+    html.P('Number of Candles'),
+    dbc.Input(id='num-bar-input', type='number', value='20')
+])
 
-    # Start the WebSocket connection
-    bsm.start()
+# creates the layout of the App
+app.layout = html.Div([
+    html.H1('Real Time Charts'),
 
-    # Create a WebSocket for receiving kline data
-    socket = bsm.kline_futures_socket(symbol='BTCUSDT', interval='1m')
+    dbc.Row([
+        dbc.Col(symbol_dropdown),
+        dbc.Col(timeframe_dropdown),
+        dbc.Col(num_bars_input)
+    ]),
 
-    # Initialize an empty DataFrame to store candlestick data
-    df = pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
+    html.Hr(),
 
-    # Fetch initial historical data to start with
-    historical_klines = client.futures_klines(symbol='BTCUSDT', interval='1m', limit=50)
-    for kline in historical_klines:
-        df = df.append({
-            'Date': pd.to_datetime(kline[0], unit='ms'),
-            'Open': float(kline[1]),
-            'High': float(kline[2]),
-            'Low': float(kline[3]),
-            'Close': float(kline[4]),
-            'Volume': float(kline[5])
-        }, ignore_index=True)
+    dcc.Interval(id='update', interval=200),
 
-    # Plot initial chart
-    mpf.plot(df.set_index('Date'), type='candle', style='charles', title='BTCUSDT.P', ylabel='Price')
+    html.Div(id='page-content')
 
-    # Start listening to the WebSocket
-    async with socket as stream:
-        while True:
-            res = await stream.recv()
-            kline = res['k']
-
-            # Check if the kline is closed
-            if kline['x']:
-                kline_data = {
-                    'Date': pd.to_datetime(kline['t'], unit='ms'),
-                    'Open': float(kline['o']),
-                    'High': float(kline['h']),
-                    'Low': float(kline['l']),
-                    'Close': float(kline['c']),
-                    'Volume': float(kline['v'])
-                }
-
-                # Append the new kline to the DataFrame
-                df = df.append(kline_data, ignore_index=True)
-
-                # Limit DataFrame size to keep it manageable (e.g., last 50 candles)
-                if len(df) > 50:
-                    df = df.iloc[-50:]
-
-                # Clear the current plot and re-plot with updated data
-                mpf.plot(df.set_index('Date'), type='candle', style='charles', title='BTCUSDT.P', ylabel='Price')
-
-    # Close the Binance client
-    await client.close_connection()
+], style={'margin-left': '5%', 'margin-right': '5%', 'margin-top': '20px'})
 
 
-# Run the async function
-asyncio.run(plot_live_candlestick())
+@app.callback(
+    Output('page-content', 'children'),
+    Input('update', 'n_intervals'),
+    State('symbol-dropdown', 'value'), State('timeframe-dropdown', 'value'), State('num-bar-input', 'value')
+)
+def update_ohlc_chart(interval, symbol, timeframe, num_bars):
+    timeframe_str = timeframe
+    timeframe = TIMEFRAME_DICT[timeframe]
+    num_bars = int(num_bars)
+
+    print(symbol, timeframe, num_bars)
+
+    bars = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_bars)
+    df = pd.DataFrame(bars)
+    df['time'] = pd.to_datetime(df['time'], unit='s')
+
+    fig = go.Figure(data=go.Candlestick(x=df['time'],
+                    open=df['open'],
+                    high=df['high'],
+                    low=df['low'],
+                    close=df['close']))
+
+    fig.update(layout_xaxis_rangeslider_visible=False)
+    fig.update_layout(yaxis={'side': 'right'})
+    fig.layout.xaxis.fixedrange = True
+    fig.layout.yaxis.fixedrange = True
+
+    return [
+        html.H2(id='chart-details', children=f'{symbol} - {timeframe_str}'),
+        dcc.Graph(figure=fig, config={'displayModeBar': False})
+        ]
+
+
+if __name__ == '__main__':
+    # starts the server
+    app.run_server()
