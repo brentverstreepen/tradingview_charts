@@ -84,6 +84,7 @@ def update_ohlc_chart(interval, symbol, timeframe, num_bars):
         ]
 
 
+
 if __name__ == '__main__':
     # starts the server
     app.run_server()
